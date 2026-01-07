@@ -1,49 +1,15 @@
+# app_fermentacion.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import re
-from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Comparador de Lotes - Fermentación", layout="wide")
 st.title("🚀 Comparador de Curvas de Fermentación")
 st.markdown("Subí los archivos de los lotes (.csv o .xlsx) y compará temperatura y presión de forma interactiva.")
 
-# ========================
-# 1. CONEXIÓN A HOJA DDP (usando el paquete nuevo)
-# ========================
-@st.cache_data(ttl=600)  # Actualiza cada 10 minutos
-def cargar_datos_ddp():
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        
-        df = conn.read(
-            spreadsheet="https://docs.google.com/spreadsheets/d/1ReAXz4FompTtBcNPVulztA5fwmj169LkCYrh4vQoE6g",
-            worksheet="DDP"
-        )
-        
-        # Columnas que necesitamos
-        df = df[['Nº LOTE', 'ESTADO', 'Recuento UFC/ml', 'Contaminado UFC/ml', 'DESVIO']]
-        df = df.rename(columns={
-            'Nº LOTE': 'Lote_DDP',
-            'Recuento UFC/ml': 'Recuento',
-            'Contaminado UFC/ml': 'Contaminado'
-        })
-        df['DESVIO'] = df['DESVIO'].replace('', '-')
-        df = df.dropna(subset=['Lote_DDP']).reset_index(drop=True)
-        
-        return df
-    
-    except Exception as e:
-        st.warning(f"No se pudo cargar la hoja DDP: {e}")
-        st.info("Los gráficos funcionan igual, pero sin datos de calidad.")
-        return pd.DataFrame(columns=['Lote_DDP', 'ESTADO', 'Recuento', 'Contaminado', 'DESVIO'])
-
-df_ddp = cargar_datos_ddp()
-
-# ========================
-# 2. SIDEBAR Y SUBIDA DE ARCHIVOS
-# ========================
+# Sidebar
 with st.sidebar:
     st.header("Subir lotes")
     uploaded_files = st.file_uploader(
@@ -60,9 +26,6 @@ if not uploaded_files:
     st.info("👆 Subí al menos un archivo para comenzar.")
     st.stop()
 
-# ========================
-# 3. PROCESAR ARCHIVOS (igual que antes)
-# ========================
 @st.cache_data(show_spinner=False)
 def procesar_archivo(file):
     try:
@@ -107,9 +70,6 @@ if not lotes:
     st.error("No se pudieron procesar los archivos.")
     st.stop()
 
-# ========================
-# 4. SELECCIÓN DE LOTES
-# ========================
 st.subheader("Seleccioná los lotes a comparar")
 cols = st.columns(3)
 seleccionados = []
@@ -122,46 +82,6 @@ if not seleccionados:
     st.info("👈 Marcá al menos un lote para ver los gráficos.")
     st.stop()
 
-# ========================
-# 5. TABLA CON DATOS DE DDP
-# ========================
-st.subheader("Datos de calidad y estado de los lotes seleccionados")
-
-datos_resumen = []
-for nombre in seleccionados:
-    # Búsqueda flexible
-    match = df_ddp[df_ddp['Lote_DDP'].str.contains(nombre, case=False, na=False)]
-    
-    if match.empty:
-        # Intenta con el código numérico (ej. BA-003-25 → 00325)
-        import re as re2
-        codigo = re2.findall(r'\d{3}-\d{2}', nombre)
-        if codigo:
-            match = df_ddp[df_ddp['Lote_DDP'].str.contains(codigo[0].replace('-', ''), na=False)]
-    
-    if not match.empty:
-        row = match.iloc[0]
-        datos_resumen.append({
-            "Lote": nombre,
-            "ESTADO": row['ESTADO'],
-            "RECUENTO UFC/ml": row['Recuento'],
-            "CONTAMINADO UFC/ml": row['Contaminado'],
-            "DESVIO": row['DESVIO']
-        })
-    else:
-        datos_resumen.append({
-            "Lote": nombre,
-            "ESTADO": "No encontrado en DDP",
-            "RECUENTO UFC/ml": "-",
-            "CONTAMINADO UFC/ml": "-",
-            "DESVIO": "-"
-        })
-
-st.table(pd.DataFrame(datos_resumen))
-
-# ========================
-# 6. GRÁFICOS (sin cambios)
-# ========================
 fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
 colores = px.colors.qualitative.Plotly
@@ -222,4 +142,4 @@ st.plotly_chart(fig_temp, use_container_width=True)
 if mostrar_presion and fig_pres:
     st.plotly_chart(fig_pres, use_container_width=True)
 
-st.success(f"¡Listo! {len(seleccionados)} lote(s) comparados.")
+st.success(f"¡Listo! {len(seleccionados)} lote(s) comparados con gráficos interactivos.")
