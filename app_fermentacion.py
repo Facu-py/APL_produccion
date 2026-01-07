@@ -4,12 +4,53 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import re
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Comparador de Lotes - Fermentación", layout="wide")
 st.title("🚀 Comparador de Curvas de Fermentación")
 st.markdown("Subí los archivos de los lotes (.csv o .xlsx) y compará temperatura y presión de forma interactiva.")
 
-# Sidebar
+# ========================
+# CARGA DE HOJA DDP (solo para datos adicionales)
+# ========================
+@st.cache_data(ttl=600)  # Refresca cada 10 minutos
+def cargar_datos_ddp():
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1ReAXz4FompTtBcNPVulztA5fwmj169LkCYrh4vQoE6g/edit")
+        worksheet = sheet.worksheet("DDP")
+        
+        data = worksheet.get_all_values()
+        headers = data[0]
+        rows = data[1:]
+        
+        df = pd.DataFrame(rows, columns=headers)
+        
+        # Seleccionamos solo las columnas que necesitamos
+        df = df[['Nº LOTE', 'ESTADO', 'Recuento UFC/ml', 'Contaminado UFC/ml', 'DESVIO']]
+        df = df.rename(columns={
+            'Nº LOTE': 'Lote_DDP',
+            'Recuento UFC/ml': 'Recuento',
+            'Contaminado UFC/ml': 'Contaminado'
+        })
+        df['DESVIO'] = df['DESVIO'].replace('', '-')
+        df = df.dropna(subset=['Lote_DDP'])
+        
+        return df
+    except Exception as e:
+        st.warning(f"No se pudo conectar con la hoja DDP: {e}")
+        st.info("Los gráficos funcionarán igual, pero sin datos de calidad.")
+        return pd.DataFrame(columns=['Lote_DDP', 'ESTADO', 'Recuento', 'Contaminado', 'DESVIO'])
+
+df_ddp = cargar_datos_ddp()
+
+# ========================
+# SIDEBAR Y SUBIDA DE ARCHIVOS (igual que antes)
+# ========================
 with st.sidebar:
     st.header("Subir lotes")
     uploaded_files = st.file_uploader(
@@ -26,6 +67,9 @@ if not uploaded_files:
     st.info("👆 Subí al menos un archivo para comenzar.")
     st.stop()
 
+# ========================
+# PROCESAR ARCHIVOS (igual que antes)
+# ========================
 @st.cache_data(show_spinner=False)
 def procesar_archivo(file):
     try:
@@ -49,6 +93,7 @@ def procesar_archivo(file):
         df_temp = df_temp.dropna(subset=['Valor'])
         df_pres = df_pres.dropna(subset=['Valor'])
         
+        # Nombre del lote limpio
         nombre = file.name
         nombre = re.sub(r'\.(csv|xlsx)$', '', nombre, flags=re.I)
         nombre = re.sub(r'_R\d+$', '', nombre)
@@ -70,6 +115,9 @@ if not lotes:
     st.error("No se pudieron procesar los archivos.")
     st.stop()
 
+# ========================
+# SELECCIÓN DE LOTES
+# ========================
 st.subheader("Seleccioná los lotes a comparar")
 cols = st.columns(3)
 seleccionados = []
@@ -82,6 +130,44 @@ if not seleccionados:
     st.info("👈 Marcá al menos un lote para ver los gráficos.")
     st.stop()
 
+# ========================
+# TABLA CON DATOS DE DDP (lo que pediste)
+# ========================
+st.subheader("Datos de calidad y estado de los lotes seleccionados")
+
+datos_resumen = []
+for nombre in seleccionados:
+    # Búsqueda flexible del lote en la columna Nº LOTE
+    coincidencia = df_ddp[df_ddp['Lote_DDP'].str.contains(nombre, case=False, na=False)]
+    if coincidencia.empty and '-' in nombre:
+        # Intento con parte del código (ej. BA-003-25 → buscar 00325)
+        codigo = nombre.split('-')[-2] + nombre.split('-')[-1]
+        coincidencia = df_ddp[df_ddp['Lote_DDP'].str.contains(codigo, na=False)]
+    
+    if not coincidencia.empty:
+        row = coincidencia.iloc[0]
+        datos_resumen.append({
+            "Lote": nombre,
+            "ESTADO": row['ESTADO'],
+            "RECUENTO UFC/ml": row['Recuento'],
+            "CONTAMINADO UFC/ml": row['Contaminado'],
+            "DESVIO": row['DESVIO']
+        })
+    else:
+        datos_resumen.append({
+            "Lote": nombre,
+            "ESTADO": "No encontrado",
+            "RECUENTO UFC/ml": "-",
+            "CONTAMINADO UFC/ml": "-",
+            "DESVIO": "-"
+        })
+
+df_resumen = pd.DataFrame(datos_resumen)
+st.table(df_resumen)  # tabla estática bonita
+
+# ========================
+# GRÁFICOS (sin cambios)
+# ========================
 fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
 colores = px.colors.qualitative.Plotly
@@ -142,4 +228,4 @@ st.plotly_chart(fig_temp, use_container_width=True)
 if mostrar_presion and fig_pres:
     st.plotly_chart(fig_pres, use_container_width=True)
 
-st.success(f"¡Listo! {len(seleccionados)} lote(s) comparados con gráficos interactivos.")
+st.success(f"¡Listo! {len(seleccionados)} lote(s) comparados.")
