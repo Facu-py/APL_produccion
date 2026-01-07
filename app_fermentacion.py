@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import re
-from streamlit_gsheets import GSheetsConnection  # Este es el import correcto
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Comparador de Lotes - Fermentación", layout="wide")
 st.title("🚀 Comparador de Curvas de Fermentación")
