@@ -23,8 +23,8 @@ with st.sidebar:
     )
     
     st.header("Opciones")
-    tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio oficial)", value=True)
-    mostrar_presion = st.checkbox("Mostrar presión en gráfico separado", value=True)
+    tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio del lote)", value=True)
+    mostrar_presion = st.checkbox("Graficar presión", value=True)
 
 if not uploaded_files:
     st.info("👆 Subí al menos un archivo para comenzar.")
