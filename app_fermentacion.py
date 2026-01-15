@@ -216,12 +216,12 @@ for nombre_lote in lotes_seleccionados:
         info = {
             "Lote": nombre_lote,
             "Estado": row.get("ESTADO", "N/A"),
-            "Recuento": row.get("RECUENTO", "N/A"),
+            "Recuento [UFC/mL]": row.get("Recuento [UFC/mL]", "N/A"),
         }
         
         # Si es PNC, mostrar recuento de contaminado
         if str(row.get("ESTADO", "")).upper() == "PNC":
-            info["Recuento Contaminado"] = row.get("RECUENTO_CONTAMINADO", "N/A")
+            info["Contaminado [UFC/mL]"] = row.get("Contaminado [UFC/mL]", "N/A")
         
         info_lotes.append(info)
     else:
@@ -229,7 +229,7 @@ for nombre_lote in lotes_seleccionados:
         info_lotes.append({
             "Lote": nombre_lote,
             "Estado": "No encontrado",
-            "Recuento": "N/A",
+            "Recuento [UFC/mL]": "N/A",
         })
 
 # Mostrar tabla
