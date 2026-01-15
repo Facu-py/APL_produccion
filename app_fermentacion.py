@@ -189,13 +189,65 @@ if not lotes:
     st.error("No se pudieron procesar los archivos subidos.")
     st.stop()
 
-# --- GRAFICOS ---
+# --- SELECCIONAR LOTES A GRAFICAR ---
+st.subheader("📊 Selecciona los lotes a graficar")
+lotes_disponibles = list(lotes.keys())
+lotes_seleccionados = st.multiselect(
+    "Elige los lotes que deseas comparar:",
+    options=lotes_disponibles,
+    default=lotes_disponibles  # Por defecto, todos seleccionados
+)
+
+if not lotes_seleccionados:
+    st.warning("⚠️ Debes seleccionar al menos un lote para graficar.")
+    st.stop()
+
+# --- MOSTRAR INFORMACIÓN DE LOTES (Tabla DDP) ---
+st.subheader("📋 Información de los lotes")
+
+# Preparar datos de lotes para mostrar
+info_lotes = []
+for nombre_lote in lotes_seleccionados:
+    # Buscar en la planilla
+    lote_info = df_planilla[df_planilla["Nº LOTE"] == lotes[nombre_lote]['lote']]
+    
+    if not lote_info.empty:
+        row = lote_info.iloc[0]
+        info = {
+            "Lote": nombre_lote,
+            "Estado": row.get("ESTADO", "N/A"),
+            "Recuento": row.get("RECUENTO", "N/A"),
+        }
+        
+        # Si es PNC, mostrar recuento de contaminado
+        if str(row.get("ESTADO", "")).upper() == "PNC":
+            info["Recuento Contaminado"] = row.get("RECUENTO_CONTAMINADO", "N/A")
+        
+        info_lotes.append(info)
+    else:
+        # Si no está en la planilla, mostrar con info vacía
+        info_lotes.append({
+            "Lote": nombre_lote,
+            "Estado": "No encontrado",
+            "Recuento": "N/A",
+        })
+
+# Mostrar tabla
+if info_lotes:
+    df_info = pd.DataFrame(info_lotes)
+    st.dataframe(df_info, use_container_width=True, hide_index=True)
+else:
+    st.info("No hay información disponible para los lotes seleccionados.")
+
+# --- GRÁFICOS ---
+st.subheader("📈 Gráficos de Fermentación")
 fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
 colores = px.colors.qualitative.Plotly
 
-for idx, (nombre, data) in enumerate(lotes.items()):
+for idx, nombre in enumerate(lotes_seleccionados):
     color = colores[idx % len(colores)]
+    data = lotes[nombre]
     df_temp = data['temp']
     df_pres = data['pres']
 
