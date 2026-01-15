@@ -21,21 +21,14 @@ credentials = service_account.Credentials.from_service_account_info(
         'https://www.googleapis.com/auth/spreadsheets.readonly'
     ])
 
-# Sheets siempre con service account (para planilla privada)
+# Sheets y Drive con service account
 sheets_service = build('sheets', 'v4', credentials=credentials)
-
-# Drive: API key si disponible (para carpeta pública), sino service account
-if 'api_key' in st.secrets.get('gdrive', {}):
-    api_key = st.secrets['gdrive']['api_key']
-    drive_service = build('drive', 'v3', developerKey=api_key)
-    st.write("Usando API key para Drive (carpeta pública)")
-else:
-    drive_service = build('drive', 'v3', credentials=credentials)
-    st.write("Service account email:", st.secrets["gdrive"].get("client_email", "No encontrado"))
+drive_service = build('drive', 'v3', credentials=credentials)
 
 # ID de carpeta y planilla
 FOLDER_ID = "1_2tfy8XDi4cDSokfi4Mbr-UAM9dTThhE"
 SPREADSHEET_ID = "1ReAXz4FompTtBcNPVulztA5fwmj169LkCYrh4vQoE6g"
+SCADA_FOLDER_ID = "1SS_UCOKlEgCs-tPl_tL0avx0CTQN3XpA"  # Carpeta con archivos SCADA 2026
 
 # --- Cargar planilla ---
 @st.cache_data(ttl=600)
@@ -59,25 +52,111 @@ def cargar_planilla():
         st.error(f"Error cargando planilla: {e}")
         return pd.DataFrame()
 
+# --- Listar archivos de carpeta Drive ---
+def listar_archivos_drive(folder_id):
+    try:
+        # Intenta listar TODOS los archivos primero (sin filtro MIME)
+        query = f"'{folder_id}' in parents and trashed = false"
+        results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)', pageSize=100).execute()
+        all_files = results.get('files', [])
+        
+        st.write(f"🔍 DEBUG - Total archivos en carpeta: {len(all_files)}")
+        
+        if all_files:
+            st.write(f"📊 Todos los archivos encontrados:")
+            for f in all_files:
+                st.write(f"  - {f['name']} ({f.get('mimeType', 'unknown')})")
+        
+        # Filtra solo archivos Excel
+        excel_files = [f for f in all_files if f['name'].lower().endswith(('.xlsx', '.xls'))]
+        st.write(f"✅ Archivos Excel encontrados: {len(excel_files)}")
+        
+        return sorted(excel_files, key=lambda x: x['name'])
+    except Exception as e:
+        st.error(f"❌ Error listando archivos de Drive: {e}")
+        import traceback
+        st.error(f"Detalles: {traceback.format_exc()}")
+        return []
+
+# --- Descargar archivo de Drive ---
+@st.cache_data(ttl=3600)
+def descargar_archivo_drive(file_id):
+    try:
+        request = drive_service.files().get_media(fileId=file_id)
+        file = io.BytesIO()
+        downloader = MediaIoBaseDownload(file, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        file.seek(0)
+        return file
+    except Exception as e:
+        st.error(f"Error descargando archivo: {e}")
+        return None
+
 df_planilla = cargar_planilla()
 if df_planilla.empty:
     st.error("No se pudo cargar la planilla. Verifica credenciales y permisos.")
-    st.stop()
-
-# --- SUBIR ARCHIVOS ---
-st.subheader("Sube los archivos Excel de los lotes a comparar")
-uploaded_files = st.file_uploader("Arrastra y suelta archivos Excel (.xlsx, .xls)", accept_multiple_files=True, type=['xlsx', 'xls'])
-
-if not uploaded_files:
-    st.info("Sube al menos un archivo Excel para graficar.")
     st.stop()
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Opciones")
     tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio)", value=True)
-    usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)  # Deshabilitado
+    usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)
     mostrar_presion = st.checkbox("Mostrar presión", value=True)
+
+# --- SELECCIONAR ARCHIVOS (Local o Drive) ---
+st.subheader("Selecciona los archivos a comparar")
+tab_local, tab_drive = st.tabs(["Cargar locales", "Seleccionar de Drive"])
+
+uploaded_files = []
+
+with tab_local:
+    uploaded_files = st.file_uploader("Arrastra y suelta archivos Excel (.xlsx, .xls)", accept_multiple_files=True, type=['xlsx', 'xls'])
+
+with tab_drive:
+    st.write(f"🔍 Buscando archivos en carpeta SCADA 2026...")
+    archivos_drive = listar_archivos_drive(SCADA_FOLDER_ID)
+    
+    if archivos_drive:
+        st.write(f"📁 Se encontraron {len(archivos_drive)} archivos en Drive (SCADA 2026)")
+        selected_files = st.multiselect(
+            "Selecciona los archivos a descargar:",
+            options=archivos_drive,
+            format_func=lambda x: x['name']
+        )
+        
+        if selected_files:
+            st.info(f"Descargando {len(selected_files)} archivo(s)...")
+            # Descargar archivos seleccionados
+            drive_files_data = []
+            for file_info in selected_files:
+                file_data = descargar_archivo_drive(file_info['id'])
+                if file_data:
+                    drive_files_data.append((file_info['name'], file_data))
+            
+            # Simular file_uploader creando objetos tipo BytesIO con atributo 'name'
+            class UploadedFile:
+                def __init__(self, name, data):
+                    self.name = name
+                    self.data = data
+                def read(self):
+                    return self.data.read()
+            
+            uploaded_files = [UploadedFile(name, data) for name, data in drive_files_data]
+    else:
+        st.warning(f"⚠️ No se encontraron archivos Excel en la carpeta (ID: {SCADA_FOLDER_ID})")
+        st.info("Verifica que:")
+        st.markdown("""
+        - La carpeta tenga archivos .xlsx o .xls
+        - El email **fermentacion-drive-reader@fermentacion-app-integracion.iam.gserviceaccount.com** tenga acceso de lectura
+        - Los permisos se hayan propagado correctamente
+        """)
+
+if not uploaded_files:
+    st.info("⬆️ Carga al menos un archivo Excel para graficar.")
+    st.stop()
 
 # --- PROCESAR ARCHIVOS SUBIDOS ---
 lotes = {}
