@@ -1,357 +1,295 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import re
-from datetime import datetime
-import io
+import plotly.express as px
+import numpy as np
+from datetime import datetime, timedelta
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+st.set_page_config(page_title="🧪 Test - Comparaciones de Lotes", layout="wide")
+st.title("🧪 Comparación Avanzada de Lotes de Fermentación")
+st.markdown("Tabla de estadísticas + Índice de Calidad + Gráficos comparativos")
 
-st.set_page_config(page_title="Comparador de Lotes - Fermentación", layout="wide")
-st.title("🚀 Comparador de Curvas de Fermentación")
-st.markdown("Selecciona lotes desde la planilla de producción y compara temperatura y presión automáticamente desde Drive.")
-
-# --- Configuración Google API ---
-credentials = service_account.Credentials.from_service_account_info(
-    st.secrets["gdrive"], scopes=[
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/spreadsheets.readonly'
-    ])
-
-# Sheets y Drive con service account
-sheets_service = build('sheets', 'v4', credentials=credentials)
-drive_service = build('drive', 'v3', credentials=credentials)
-
-# ID de carpeta y planilla
-FOLDER_ID = "1_2tfy8XDi4cDSokfi4Mbr-UAM9dTThhE"
-SPREADSHEET_ID = "1ReAXz4FompTtBcNPVulztA5fwmj169LkCYrh4vQoE6g"
-SCADA_FOLDER_ID = "1SS_UCOKlEgCs-tPl_tL0avx0CTQN3XpA"  # Carpeta con archivos SCADA 2026
-
-# --- Cargar planilla ---
-@st.cache_data(ttl=600)
-def cargar_planilla():
-    try:
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range="DDP!A1:AA10000"
-        ).execute()
-
-        values = result.get('values', [])
-        if not values:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(values[1:], columns=values[0])
-        df['INICIO'] = pd.to_datetime(df['INICIO'], dayfirst=True, errors='coerce')
-        df['FIN'] = pd.to_datetime(df['FIN'], dayfirst=True, errors='coerce')
-        return df
-
-    except Exception as e:
-        st.error(f"Error cargando planilla: {e}")
-        return pd.DataFrame()
-
-# --- Listar archivos de carpeta Drive ---
-def listar_archivos_drive(folder_id):
-    try:
-        # Intenta listar TODOS los archivos primero (sin filtro MIME)
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = drive_service.files().list(q=query, spaces='drive', fields='files(id, name, mimeType)', pageSize=100).execute()
-        all_files = results.get('files', [])
-        
-        st.write(f"🔍 DEBUG - Total archivos en carpeta: {len(all_files)}")
-        
-        if all_files:
-            st.write(f"📊 Todos los archivos encontrados:")
-            for f in all_files:
-                st.write(f"  - {f['name']} ({f.get('mimeType', 'unknown')})")
-        
-        # Filtra solo archivos Excel
-        excel_files = [f for f in all_files if f['name'].lower().endswith(('.xlsx', '.xls'))]
-        st.write(f"✅ Archivos Excel encontrados: {len(excel_files)}")
-        
-        return sorted(excel_files, key=lambda x: x['name'])
-    except Exception as e:
-        st.error(f"❌ Error listando archivos de Drive: {e}")
-        import traceback
-        st.error(f"Detalles: {traceback.format_exc()}")
-        return []
-
-# --- Descargar archivo de Drive ---
-@st.cache_data(ttl=3600)
-def descargar_archivo_drive(file_id):
-    try:
-        request = drive_service.files().get_media(fileId=file_id)
-        file = io.BytesIO()
-        downloader = MediaIoBaseDownload(file, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        file.seek(0)
-        return file
-    except Exception as e:
-        st.error(f"Error descargando archivo: {e}")
-        return None
-
-df_planilla = cargar_planilla()
-if df_planilla.empty:
-    st.error("No se pudo cargar la planilla. Verifica credenciales y permisos.")
-    st.stop()
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("Opciones")
-    tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio)", value=True)
-    usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)
-    mostrar_presion = st.checkbox("Mostrar presión", value=True)
-    mostrar_tasa_cambio = st.checkbox("Mostrar tasa de cambio (°C/h)", value=False)
-
-# --- SELECCIONAR ARCHIVOS (Local o Drive) ---
-st.subheader("Selecciona los archivos a comparar")
-tab_local, tab_drive = st.tabs(["Cargar locales", "Seleccionar de Drive"])
-
-uploaded_files = []
-
-with tab_local:
-    uploaded_files = st.file_uploader("Arrastra y suelta archivos Excel (.xlsx, .xls)", accept_multiple_files=True, type=['xlsx', 'xls'])
-
-with tab_drive:
-    st.write(f"🔍 Buscando archivos en carpeta SCADA 2026...")
-    archivos_drive = listar_archivos_drive(SCADA_FOLDER_ID)
+# --- GENERAR DATOS SIMULADOS (3 LOTES) ---
+@st.cache_data
+def generar_lotes_simulados():
+    """Genera 3 lotes con características diferentes"""
+    horas = np.linspace(0, 72, 500)
     
-    if archivos_drive:
-        st.write(f"📁 Se encontraron {len(archivos_drive)} archivos en Drive (SCADA 2026)")
-        selected_files = st.multiselect(
-            "Selecciona los archivos a descargar:",
-            options=archivos_drive,
-            format_func=lambda x: x['name']
-        )
-        
-        if selected_files:
-            st.info(f"Descargando {len(selected_files)} archivo(s)...")
-            # Descargar archivos seleccionados
-            drive_files_data = []
-            for file_info in selected_files:
-                file_data = descargar_archivo_drive(file_info['id'])
-                if file_data:
-                    drive_files_data.append((file_info['name'], file_data))
-            
-            # Simular file_uploader creando objetos tipo BytesIO con atributo 'name'
-            class UploadedFile:
-                def __init__(self, name, data):
-                    self.name = name
-                    self.data = data
-                def read(self):
-                    return self.data.read()
-            
-            uploaded_files = [UploadedFile(name, data) for name, data in drive_files_data]
-    else:
-        st.warning(f"⚠️ No se encontraron archivos Excel en la carpeta (ID: {SCADA_FOLDER_ID})")
-        st.info("Verifica que:")
-        st.markdown("""
-        - La carpeta tenga archivos .xlsx o .xls
-        - El email **fermentacion-drive-reader@fermentacion-app-integracion.iam.gserviceaccount.com** tenga acceso de lectura
-        - Los permisos se hayan propagado correctamente
-        """)
-
-if not uploaded_files:
-    st.info("⬆️ Carga al menos un archivo Excel para graficar.")
-    st.stop()
-
-# --- PROCESAR ARCHIVOS SUBIDOS ---
-lotes = {}
-for uploaded_file in uploaded_files:
-    try:
-        df = pd.read_excel(uploaded_file)
-        df = df.dropna(how='all')
-        tiempo_col = 'TimeString' if 'TimeString' in df.columns else df.columns[0]
-        df['Tiempo'] = pd.to_datetime(df[tiempo_col], format='%d/%m/%Y %H:%M:%S', errors='coerce')
-        df = df.dropna(subset=['Tiempo']).sort_values('Tiempo')
-
-        df_temp = df[df['VarName'].str.contains('T1.Output_registro', na=False)]
-        df_pres = df[df['VarName'].str.contains('P1.Output_registro', na=False)]
-
-        df_temp['Valor'] = pd.to_numeric(df_temp['VarValue'], errors='coerce')
-        df_pres['Valor'] = pd.to_numeric(df_pres['VarValue'], errors='coerce')
-
-        nombre_limpio = re.sub(r'\.(xlsx|xlsm)$', '', uploaded_file.name, flags=re.I)
-        nombre_limpio = re.sub(r'_R\d+$', '', nombre_limpio)
-
-        # Usar el nombre del archivo como lote
-        lote_asociado = nombre_limpio
-
-        lotes[nombre_limpio] = {'temp': df_temp, 'pres': df_pres, 'lote': lote_asociado}
-
-    except Exception as e:
-        st.error(f"Error procesando {uploaded_file.name}: {e}")
-
-if not lotes:
-    st.error("No se pudieron procesar los archivos subidos.")
-    st.stop()
-
-# --- SELECCIONAR LOTES A GRAFICAR ---
-st.subheader("📊 Selecciona los lotes a graficar")
-lotes_disponibles = list(lotes.keys())
-lotes_seleccionados = st.multiselect(
-    "Elige los lotes que deseas comparar:",
-    options=lotes_disponibles,
-    default=lotes_disponibles  # Por defecto, todos seleccionados
-)
-
-if not lotes_seleccionados:
-    st.warning("⚠️ Debes seleccionar al menos un lote para graficar.")
-    st.stop()
-
-# --- MOSTRAR INFORMACIÓN DE LOTES (Tabla DDP) ---
-st.subheader("📋 Información de los lotes")
-
-# Preparar datos de lotes para mostrar
-info_lotes = []
-for nombre_lote in lotes_seleccionados:
-    # Buscar en la planilla
-    lote_info = df_planilla[df_planilla["Nº LOTE"] == lotes[nombre_lote]['lote']]
+    # LOTE 1: Fermentación óptima
+    temp1 = 25 + 15 * (1 - np.exp(-horas/20)) + 0.3 * np.sin(horas/5) + np.random.normal(0, 0.15, len(horas))
+    pres1 = 1 + 0.8 * (1 - np.exp(-horas/15)) + 0.15 * np.sin(horas/6) + np.random.normal(0, 0.03, len(horas))
     
-    if not lote_info.empty:
-        row = lote_info.iloc[0]
-        info = {
-            "Lote": nombre_lote,
-            "Estado": row.get("ESTADO", "N/A"),
-            "Recuento [UFC/mL]": row.get("Recuento [UFC/mL]", "N/A"),
+    # LOTE 2: Fermentación con variabilidad media
+    temp2 = 25 + 14 * (1 - np.exp(-horas/22)) + 0.8 * np.sin(horas/4) + np.random.normal(0, 0.3, len(horas))
+    pres2 = 1 + 0.75 * (1 - np.exp(-horas/18)) + 0.3 * np.sin(horas/5) + np.random.normal(0, 0.08, len(horas))
+    
+    # LOTE 3: Fermentación con problemas (inestable)
+    temp3 = 25 + 13 * (1 - np.exp(-horas/25)) + 1.2 * np.sin(horas/3) + np.random.normal(0, 0.5, len(horas))
+    pres3 = 1 + 0.7 * (1 - np.exp(-horas/20)) + 0.5 * np.sin(horas/4) + np.random.normal(0, 0.15, len(horas))
+    
+    inicio = datetime.now() - timedelta(hours=72)
+    tiempos = [inicio + timedelta(hours=float(h)) for h in horas]
+    
+    lotes = {
+        'Lote A (Óptimo)': {
+            'temp': pd.DataFrame({'Tiempo': tiempos, 'Valor': temp1}).sort_values('Tiempo').reset_index(drop=True),
+            'pres': pd.DataFrame({'Tiempo': tiempos, 'Valor': pres1}).sort_values('Tiempo').reset_index(drop=True),
+        },
+        'Lote B (Normal)': {
+            'temp': pd.DataFrame({'Tiempo': tiempos, 'Valor': temp2}).sort_values('Tiempo').reset_index(drop=True),
+            'pres': pd.DataFrame({'Tiempo': tiempos, 'Valor': pres2}).sort_values('Tiempo').reset_index(drop=True),
+        },
+        'Lote C (Inestable)': {
+            'temp': pd.DataFrame({'Tiempo': tiempos, 'Valor': temp3}).sort_values('Tiempo').reset_index(drop=True),
+            'pres': pd.DataFrame({'Tiempo': tiempos, 'Valor': pres3}).sort_values('Tiempo').reset_index(drop=True),
         }
+    }
+    return lotes
+
+lotes = generar_lotes_simulados()
+lotes_seleccionados = list(lotes.keys())
+
+# --- FUNCIÓN PARA CALCULAR ESTADÍSTICAS ---
+def calcular_estadisticas(lotes_dict, nombres_lotes):
+    """Calcula métricas para cada lote"""
+    stats = []
+    
+    for nombre in nombres_lotes:
+        df_temp = lotes_dict[nombre]['temp']
+        df_pres = lotes_dict[nombre]['pres']
         
-        # Si es PNC, mostrar recuento de contaminado
-        if str(row.get("ESTADO", "")).upper() == "PNC":
-            info["Contaminado [UFC/mL]"] = row.get("Contaminado [UFC/mL]", "N/A")
+        # Calcular tasa de cambio (diferencia central)
+        delta_tiempo = df_temp['Tiempo'].diff().dt.total_seconds() / 3600
+        tasa_temp = (df_temp['Valor'].shift(-1) - df_temp['Valor'].shift(1)) / (2 * delta_tiempo)
         
-        info_lotes.append(info)
-    else:
-        # Si no está en la planilla, mostrar con info vacía
-        info_lotes.append({
-            "Lote": nombre_lote,
-            "Estado": "No encontrado",
-            "Recuento [UFC/mL]": "N/A",
+        duracion_h = (df_temp['Tiempo'].max() - df_temp['Tiempo'].min()).total_seconds() / 3600
+        
+        stats.append({
+            'Lote': nombre,
+            'Temp Max (°C)': f"{df_temp['Valor'].max():.2f}",
+            'Temp Min (°C)': f"{df_temp['Valor'].min():.2f}",
+            'Temp Prom (°C)': f"{df_temp['Valor'].mean():.2f}",
+            'Temp Desv (°C)': f"{df_temp['Valor'].std():.3f}",
+            'Pres Max (bar)': f"{df_pres['Valor'].max():.2f}",
+            'Pres Prom (bar)': f"{df_pres['Valor'].mean():.2f}",
+            'Tasa Max (°C/h)': f"{tasa_temp[1:-1].max():.3f}",
+            'Tasa Prom (°C/h)': f"{tasa_temp[1:-1].mean():.3f}",
+            'Duración (h)': f"{duracion_h:.1f}",
         })
+    
+    return pd.DataFrame(stats)
 
-# Mostrar tabla
-if info_lotes:
-    df_info = pd.DataFrame(info_lotes)
-    st.dataframe(df_info, use_container_width=True, hide_index=True)
-else:
-    st.info("No hay información disponible para los lotes seleccionados.")
+# --- FUNCIÓN PARA CALCULAR ÍNDICE DE CALIDAD ---
+def calcular_indice_calidad(lotes_dict, nombres_lotes):
+    """
+    Calcula un índice de calidad 0-100 basado en:
+    - Estabilidad (desv std baja = mejor)
+    - Velocidad controlada (tasa de cambio estable)
+    - Duración adecuada
+    """
+    scores = []
+    
+    for nombre in nombres_lotes:
+        df_temp = lotes_dict[nombre]['temp']
+        
+        # Estabilidad: temperatura con baja desviación = mejor
+        desv = df_temp['Valor'].std()
+        estabilidad = max(0, 100 - (desv * 50))  # Normalizar
+        
+        # Velocidad controlada: tasa de cambio baja y estable
+        delta_tiempo = df_temp['Tiempo'].diff().dt.total_seconds() / 3600
+        tasa_temp = (df_temp['Valor'].shift(-1) - df_temp['Valor'].shift(1)) / (2 * delta_tiempo)
+        desv_tasa = tasa_temp[1:-1].std()
+        velocidad = max(0, 100 - (desv_tasa * 100))
+        
+        # Promedio ponderado
+        calidad = (estabilidad * 0.6 + velocidad * 0.4)
+        
+        scores.append({
+            'Lote': nombre,
+            'Estabilidad': f"{estabilidad:.1f}",
+            'Velocidad Controlada': f"{velocidad:.1f}",
+            'Índice de Calidad': f"{calidad:.1f}/100",
+            '🎯 Rating': '⭐⭐⭐' if calidad >= 75 else ('⭐⭐' if calidad >= 50 else '⭐')
+        })
+    
+    return pd.DataFrame(scores)
 
-# --- GRÁFICOS ---
+# --- LAYOUT PRINCIPAL ---
+st.subheader("📊 Comparativa de Lotes")
+
+# TAB 1: Estadísticas
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Estadísticas", "🎯 Calidad", "📈 Desviaciones", "🔗 Correlación"])
+
+with tab1:
+    st.markdown("#### Tabla Comparativa de Métricas")
+    df_stats = calcular_estadisticas(lotes, lotes_seleccionados)
+    st.dataframe(df_stats, use_container_width=True, hide_index=True)
+
+with tab2:
+    st.markdown("#### Índice de Calidad de Fermentación")
+    df_calidad = calcular_indice_calidad(lotes, lotes_seleccionados)
+    st.dataframe(df_calidad, use_container_width=True, hide_index=True)
+    
+    # Gráfico de índice
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        fig_calidad = go.Figure()
+        calidades = [float(x.split('/')[0]) for x in df_calidad['Índice de Calidad']]
+        fig_calidad.add_trace(go.Bar(
+            x=df_calidad['Lote'],
+            y=calidades,
+            marker=dict(color=['#1f77b4' if x >= 75 else '#ff7f0e' if x >= 50 else '#d62728' for x in calidades]),
+            text=[f"{x:.1f}" for x in calidades],
+            textposition='outside'
+        ))
+        fig_calidad.update_layout(
+            title="Índice de Calidad por Lote",
+            yaxis_title="Puntuación (0-100)",
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig_calidad, use_container_width=True)
+    
+    with col2:
+        st.markdown("**Escala:**")
+        st.markdown("🟢 **75-100**: Óptimo")
+        st.markdown("🟡 **50-75**: Normal")
+        st.markdown("🔴 **<50**: Problemático")
+
+with tab3:
+    st.markdown("#### Desviación de Cada Lote respecto al Promedio")
+    
+    # Calcular desviación
+    fig_desv = go.Figure()
+    
+    # Calcular temperatura promedio de todos los lotes
+    temp_promedio_general = np.mean([lotes[nombre]['temp']['Valor'].mean() for nombre in lotes_seleccionados])
+    
+    colores_desv = px.colors.qualitative.Plotly
+    
+    for idx, nombre in enumerate(lotes_seleccionados):
+        df_temp = lotes[nombre]['temp']
+        x_vals = (df_temp['Tiempo'] - df_temp['Tiempo'].min()).dt.total_seconds() / 3600
+        desviacion = df_temp['Valor'] - temp_promedio_general
+        
+        fig_desv.add_trace(go.Scatter(
+            x=x_vals, y=desviacion,
+            mode='lines', name=nombre,
+            line=dict(width=2.5),
+            fill='tozeroy'
+        ))
+    
+    fig_desv.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig_desv.update_layout(
+        title="Desviación de Temperatura respecto al Promedio General",
+        xaxis_title="Horas",
+        yaxis_title="Desviación (°C)",
+        hovermode="x unified",
+        height=500
+    )
+    st.plotly_chart(fig_desv, use_container_width=True)
+
+with tab4:
+    st.markdown("#### Correlación entre Lotes")
+    
+    # Crear matriz de correlación de temperaturas
+    temp_data = {}
+    for nombre in lotes_seleccionados:
+        temp_data[nombre] = lotes[nombre]['temp']['Valor'].values
+    
+    df_temp_matrix = pd.DataFrame(temp_data)
+    corr_matrix = df_temp_matrix.corr()
+    
+    fig_corr = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns,
+        y=corr_matrix.columns,
+        colorscale='RdBu',
+        zmid=0,
+        zmin=-1,
+        zmax=1,
+        text=np.round(corr_matrix.values, 2),
+        texttemplate='%{text}',
+        textfont={"size": 12},
+    ))
+    
+    fig_corr.update_layout(
+        title="Matriz de Correlación de Temperatura entre Lotes",
+        height=400
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+    
+    st.info("💡 **Correlación alta (>0.8)** = Lotes con patrones similares")
+
+# --- GRÁFICOS PRINCIPALES ---
 st.subheader("📈 Gráficos de Fermentación")
-fig_temp = go.Figure()
-fig_pres = go.Figure() if mostrar_presion else None
-fig_rate_temp = go.Figure() if mostrar_tasa_cambio else None
-fig_rate_pres = go.Figure() if (mostrar_tasa_cambio and mostrar_presion) else None
+
+fig_temp_all = go.Figure()
+fig_pres_all = go.Figure()
 colores = px.colors.qualitative.Plotly
 
 for idx, nombre in enumerate(lotes_seleccionados):
     color = colores[idx % len(colores)]
-    data = lotes[nombre]
-    df_temp = data['temp'].sort_values('Tiempo').reset_index(drop=True)
-    df_pres = data['pres'].sort_values('Tiempo').reset_index(drop=True) if len(data['pres']) else pd.DataFrame()
-
-    if tiempo_relativo:
-        inicio = None
-        if usar_inicio_oficial:
-            row = df_planilla[df_planilla["Nº LOTE"] == data['lote']]["INICIO"]
-            if not row.empty:
-                inicio = row.iloc[0]
-
-        if inicio is None:
-            inicio = df_temp['Tiempo'].min()
-
-        x_temp = (df_temp['Tiempo'] - inicio).dt.total_seconds() / 3600
-        x_pres = (df_pres['Tiempo'] - inicio).dt.total_seconds() / 3600 if len(df_pres) else []
-        xlabel = "Horas"
-    else:
-        x_temp = df_temp['Tiempo']
-        x_pres = df_pres['Tiempo']
-        xlabel = "Fecha/Hora"
-
-    fig_temp.add_trace(go.Scatter(
-        x=x_temp, y=df_temp['Valor'],
-        mode='lines', name=f"{nombre} - Temp",
-        line=dict(color=color, width=3),
+    df_temp = lotes[nombre]['temp']
+    df_pres = lotes[nombre]['pres']
+    
+    x_vals = (df_temp['Tiempo'] - df_temp['Tiempo'].min()).dt.total_seconds() / 3600
+    
+    fig_temp_all.add_trace(go.Scatter(
+        x=x_vals, y=df_temp['Valor'],
+        mode='lines', name=nombre,
+        line=dict(color=color, width=3)
+    ))
+    
+    fig_pres_all.add_trace(go.Scatter(
+        x=x_vals, y=df_pres['Valor'],
+        mode='lines', name=nombre,
+        line=dict(color=color, width=3)
     ))
 
-    if mostrar_presion and len(df_pres):
-        fig_pres.add_trace(go.Scatter(
-            x=x_pres, y=df_pres['Valor'],
-            mode='lines', name=f"{nombre} - Pres",
-            line=dict(color=color, width=3),
-        ))
-
-    # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE TEMPERATURA ---
-    if mostrar_tasa_cambio and len(df_temp) > 1:
-        # Calcular diferencias de tiempo en horas
-        delta_tiempo = df_temp['Tiempo'].diff().dt.total_seconds() / 3600
-        # Calcular tasa de cambio de temperatura
-        tasa_temp = df_temp['Valor'].diff() / delta_tiempo
-        
-        fig_rate_temp.add_trace(go.Scatter(
-            x=x_temp[1:], y=tasa_temp[1:],
-            mode='lines', name=f"{nombre} - Tasa Temp",
-            line=dict(color=color, width=3),
-        ))
-
-    # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE PRESIÓN ---
-    if mostrar_tasa_cambio and mostrar_presion and len(df_pres) > 1:
-        # Calcular diferencias de tiempo en horas
-        delta_tiempo_pres = df_pres['Tiempo'].diff().dt.total_seconds() / 3600
-        # Calcular tasa de cambio de presión
-        tasa_pres = df_pres['Valor'].diff() / delta_tiempo_pres
-        
-        fig_rate_pres.add_trace(go.Scatter(
-            x=x_pres[1:], y=tasa_pres[1:],
-            mode='lines', name=f"{nombre} - Tasa Pres",
-            line=dict(color=color, width=3),
-        ))
-
-fig_temp.update_layout(
-    title="Temperatura",
-    xaxis_title=xlabel,
+fig_temp_all.update_layout(
+    title="Temperatura - Comparativa de Todos los Lotes",
+    xaxis_title="Horas",
     yaxis_title="°C",
     hovermode="x unified",
-    height=600
+    height=500
 )
 
-st.plotly_chart(fig_temp, use_container_width=True)
+fig_pres_all.update_layout(
+    title="Presión - Comparativa de Todos los Lotes",
+    xaxis_title="Horas",
+    yaxis_title="bar",
+    hovermode="x unified",
+    height=500
+)
 
-if mostrar_presion:
-    fig_pres.update_layout(
-        title="Presión",
-        xaxis_title=xlabel,
-        yaxis_title="bar",
-        hovermode="x unified",
-        height=600
-    )
-    st.plotly_chart(fig_pres, use_container_width=True)
+col1, col2 = st.columns(2)
+with col1:
+    st.plotly_chart(fig_temp_all, use_container_width=True)
+with col2:
+    st.plotly_chart(fig_pres_all, use_container_width=True)
 
-# --- GRÁFICOS DE TASA DE CAMBIO ---
-if mostrar_tasa_cambio:
-    st.subheader("📊 Tasa de Cambio")
-    
-    fig_rate_temp.update_layout(
-        title="Velocidad de Cambio de Temperatura",
-        xaxis_title=xlabel,
-        yaxis_title="°C/h",
-        hovermode="x unified",
-        height=600
-    )
-    st.plotly_chart(fig_rate_temp, use_container_width=True)
-    
-    if mostrar_presion:
-        fig_rate_pres.update_layout(
-            title="Velocidad de Cambio de Presión",
-            xaxis_title=xlabel,
-            yaxis_title="bar/h",
-            hovermode="x unified",
-            height=600
-        )
-        st.plotly_chart(fig_rate_pres, use_container_width=True)
+# --- BOX PLOT COMPARATIVO ---
+st.subheader("📊 Distribución de Temperaturas (Box Plot)")
 
-st.success("¡Comparación lista!")
+fig_box = go.Figure()
+
+for nombre in lotes_seleccionados:
+    df_temp = lotes[nombre]['temp']
+    fig_box.add_trace(go.Box(
+        y=df_temp['Valor'],
+        name=nombre,
+        boxmean='sd'
+    ))
+
+fig_box.update_layout(
+    title="Distribución de Temperatura por Lote (Mediana, Q1-Q3, Desv Std)",
+    yaxis_title="Temperatura (°C)",
+    height=500
+)
+st.plotly_chart(fig_box, use_container_width=True)
+
+st.success("✅ ¡Comparativa completa lista!")
