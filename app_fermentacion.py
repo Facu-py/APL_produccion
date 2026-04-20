@@ -105,6 +105,7 @@ with st.sidebar:
     tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio)", value=True)
     usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)
     mostrar_presion = st.checkbox("Mostrar presión", value=True)
+    mostrar_tasa_cambio = st.checkbox("Mostrar tasa de cambio (°C/h)", value=False)
 
 # --- SELECCIONAR ARCHIVOS (Local o Drive) ---
 st.subheader("Selecciona los archivos a comparar")
@@ -243,13 +244,15 @@ else:
 st.subheader("📈 Gráficos de Fermentación")
 fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
+fig_rate_temp = go.Figure() if mostrar_tasa_cambio else None
+fig_rate_pres = go.Figure() if (mostrar_tasa_cambio and mostrar_presion) else None
 colores = px.colors.qualitative.Plotly
 
 for idx, nombre in enumerate(lotes_seleccionados):
     color = colores[idx % len(colores)]
     data = lotes[nombre]
-    df_temp = data['temp']
-    df_pres = data['pres']
+    df_temp = data['temp'].sort_values('Tiempo').reset_index(drop=True)
+    df_pres = data['pres'].sort_values('Tiempo').reset_index(drop=True) if len(data['pres']) else pd.DataFrame()
 
     if tiempo_relativo:
         inicio = None
@@ -282,6 +285,32 @@ for idx, nombre in enumerate(lotes_seleccionados):
             line=dict(color=color, width=3),
         ))
 
+    # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE TEMPERATURA ---
+    if mostrar_tasa_cambio and len(df_temp) > 1:
+        # Calcular diferencias de tiempo en horas
+        delta_tiempo = df_temp['Tiempo'].diff().dt.total_seconds() / 3600
+        # Calcular tasa de cambio de temperatura
+        tasa_temp = df_temp['Valor'].diff() / delta_tiempo
+        
+        fig_rate_temp.add_trace(go.Scatter(
+            x=x_temp[1:], y=tasa_temp[1:],
+            mode='lines', name=f"{nombre} - Tasa Temp",
+            line=dict(color=color, width=3),
+        ))
+
+    # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE PRESIÓN ---
+    if mostrar_tasa_cambio and mostrar_presion and len(df_pres) > 1:
+        # Calcular diferencias de tiempo en horas
+        delta_tiempo_pres = df_pres['Tiempo'].diff().dt.total_seconds() / 3600
+        # Calcular tasa de cambio de presión
+        tasa_pres = df_pres['Valor'].diff() / delta_tiempo_pres
+        
+        fig_rate_pres.add_trace(go.Scatter(
+            x=x_pres[1:], y=tasa_pres[1:],
+            mode='lines', name=f"{nombre} - Tasa Pres",
+            line=dict(color=color, width=3),
+        ))
+
 fig_temp.update_layout(
     title="Temperatura",
     xaxis_title=xlabel,
@@ -301,5 +330,28 @@ if mostrar_presion:
         height=600
     )
     st.plotly_chart(fig_pres, use_container_width=True)
+
+# --- GRÁFICOS DE TASA DE CAMBIO ---
+if mostrar_tasa_cambio:
+    st.subheader("📊 Tasa de Cambio")
+    
+    fig_rate_temp.update_layout(
+        title="Velocidad de Cambio de Temperatura",
+        xaxis_title=xlabel,
+        yaxis_title="°C/h",
+        hovermode="x unified",
+        height=600
+    )
+    st.plotly_chart(fig_rate_temp, use_container_width=True)
+    
+    if mostrar_presion:
+        fig_rate_pres.update_layout(
+            title="Velocidad de Cambio de Presión",
+            xaxis_title=xlabel,
+            yaxis_title="bar/h",
+            hovermode="x unified",
+            height=600
+        )
+        st.plotly_chart(fig_rate_pres, use_container_width=True)
 
 st.success("¡Comparación lista!")
