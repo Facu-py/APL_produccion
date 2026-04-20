@@ -106,6 +106,8 @@ with st.sidebar:
     usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)
     mostrar_presion = st.checkbox("Mostrar presión", value=True)
     mostrar_tasa_cambio = st.checkbox("Mostrar tasa de cambio (°C/h)", value=False)
+    mostrar_analisis = st.checkbox("Mostrar análisis estadístico", value=True)  # NUEVO
+    mostrar_banda_min_max = st.checkbox("Mostrar banda min/max", value=True)  # NUEVO
 
 # --- SELECCIONAR ARCHIVOS (Local o Drive) ---
 st.subheader("Selecciona los archivos a comparar")
@@ -240,6 +242,50 @@ if info_lotes:
 else:
     st.info("No hay información disponible para los lotes seleccionados.")
 
+# --- FUNCIÓN PARA AGREGAR ANÁLISIS ESTADÍSTICO ---
+def agregar_analisis_estadistico(fig, x_data, y_data, nombre_lote, color, es_temperatura=True):
+    """Agrega línea de promedio y banda min/max al gráfico"""
+    if len(y_data) == 0:
+        return
+    
+    promedio = y_data.mean()
+    maximo = y_data.max()
+    minimo = y_data.min()
+    
+    # Línea de promedio
+    fig.add_hline(
+        y=promedio,
+        line_dash="dash",
+        line_color=color,
+        annotation_text=f"Prom: {promedio:.2f}",
+        annotation_position="right",
+        layer="below"
+    )
+    
+    # Banda min-max (opcional)
+    if mostrar_banda_min_max:
+        fig.add_hrect(
+            y0=minimo, y1=maximo,
+            fillcolor=color, opacity=0.1,
+            layer="below", line_width=0,
+        )
+
+def generar_tabla_estadisticas(lotes_data, es_temperatura=True):
+    """Genera tabla con estadísticas de temperatura o presión"""
+    stats = []
+    for nombre, data in lotes_data.items():
+        valores = data.dropna()
+        if len(valores) > 0:
+            stats.append({
+                "Lote": nombre,
+                "Promedio": f"{valores.mean():.2f}",
+                "Mínimo": f"{valores.min():.2f}",
+                "Máximo": f"{valores.max():.2f}",
+                "Std Dev": f"{valores.std():.2f}",
+                "Muestras": len(valores)
+            })
+    return pd.DataFrame(stats) if stats else None
+
 # --- GRÁFICOS ---
 st.subheader("📈 Gráficos de Fermentación")
 fig_temp = go.Figure()
@@ -247,6 +293,10 @@ fig_pres = go.Figure() if mostrar_presion else None
 fig_rate_temp = go.Figure() if mostrar_tasa_cambio else None
 fig_rate_pres = go.Figure() if (mostrar_tasa_cambio and mostrar_presion) else None
 colores = px.colors.qualitative.Plotly
+
+# Almacenar datos para estadísticas
+datos_estadisticos_temp = {}
+datos_estadisticos_pres = {}
 
 for idx, nombre in enumerate(lotes_seleccionados):
     color = colores[idx % len(colores)]
@@ -271,6 +321,11 @@ for idx, nombre in enumerate(lotes_seleccionados):
         x_temp = df_temp['Tiempo']
         x_pres = df_pres['Tiempo']
         xlabel = "Fecha/Hora"
+
+    # Guardar datos para estadísticas
+    datos_estadisticos_temp[nombre] = df_temp['Valor']
+    if len(df_pres):
+        datos_estadisticos_pres[nombre] = df_pres['Valor']
 
     fig_temp.add_trace(go.Scatter(
         x=x_temp, y=df_temp['Valor'],
@@ -321,6 +376,13 @@ fig_temp.update_layout(
 
 st.plotly_chart(fig_temp, use_container_width=True)
 
+# Mostrar estadísticas de temperatura
+if mostrar_analisis:
+    st.markdown("**📊 Estadísticas de Temperatura**")
+    df_stats_temp = generar_tabla_estadisticas(datos_estadisticos_temp)
+    if df_stats_temp is not None:
+        st.dataframe(df_stats_temp, use_container_width=True, hide_index=True)
+
 if mostrar_presion:
     fig_pres.update_layout(
         title="Presión",
@@ -330,6 +392,13 @@ if mostrar_presion:
         height=600
     )
     st.plotly_chart(fig_pres, use_container_width=True)
+    
+    # Mostrar estadísticas de presión
+    if mostrar_analisis:
+        st.markdown("**📊 Estadísticas de Presión**")
+        df_stats_pres = generar_tabla_estadisticas(datos_estadisticos_pres)
+        if df_stats_pres is not None:
+            st.dataframe(df_stats_pres, use_container_width=True, hide_index=True)
 
 # --- GRÁFICOS DE TASA DE CAMBIO ---
 if mostrar_tasa_cambio:
