@@ -105,9 +105,10 @@ with st.sidebar:
     tiempo_relativo = st.checkbox("Tiempo relativo (horas desde inicio)", value=True)
     usar_inicio_oficial = st.checkbox("Usar INICIO oficial de planilla", value=False)
     mostrar_presion = st.checkbox("Mostrar presión", value=True)
+    mostrar_temp_camisa = st.checkbox("Mostrar temperatura de camisa (T2)", value=False)  # NUEVO
     mostrar_tasa_cambio = st.checkbox("Mostrar tasa de cambio (°C/h)", value=False)
-    mostrar_analisis = st.checkbox("Mostrar análisis estadístico", value=True)  # NUEVO
-    mostrar_banda_min_max = st.checkbox("Mostrar banda min/max", value=True)  # NUEVO
+    mostrar_analisis = st.checkbox("Mostrar análisis estadístico", value=True)
+    mostrar_banda_min_max = st.checkbox("Mostrar banda min/max", value=True)
 
 # --- SELECCIONAR ARCHIVOS (Local o Drive) ---
 st.subheader("Selecciona los archivos a comparar")
@@ -171,11 +172,13 @@ for uploaded_file in uploaded_files:
         df['Tiempo'] = pd.to_datetime(df[tiempo_col], format='%d/%m/%Y %H:%M:%S', errors='coerce')
         df = df.dropna(subset=['Tiempo']).sort_values('Tiempo')
 
-        df_temp = df[df['VarName'].str.contains('T1.Output_registro', na=False)]
-        df_pres = df[df['VarName'].str.contains('P1.Output_registro', na=False)]
+        df_temp = df[df['VarName'].str.contains('T1.Output_registro|T1_Output_registro', na=False)]
+        df_pres = df[df['VarName'].str.contains('P1.Output_registro|P1_Output_registro', na=False)]
+        df_temp_camisa = df[df['VarName'].str.contains('T2.Output_registro|T2_Output_registro', na=False)]  # NUEVO
 
         df_temp['Valor'] = pd.to_numeric(df_temp['VarValue'], errors='coerce')
         df_pres['Valor'] = pd.to_numeric(df_pres['VarValue'], errors='coerce')
+        df_temp_camisa['Valor'] = pd.to_numeric(df_temp_camisa['VarValue'], errors='coerce')  # NUEVO
 
         nombre_limpio = re.sub(r'\.(xlsx|xlsm)$', '', uploaded_file.name, flags=re.I)
         nombre_limpio = re.sub(r'_R\d+$', '', nombre_limpio)
@@ -183,7 +186,12 @@ for uploaded_file in uploaded_files:
         # Usar el nombre del archivo como lote
         lote_asociado = nombre_limpio
 
-        lotes[nombre_limpio] = {'temp': df_temp, 'pres': df_pres, 'lote': lote_asociado}
+        lotes[nombre_limpio] = {
+            'temp': df_temp, 
+            'pres': df_pres, 
+            'temp_camisa': df_temp_camisa,  # NUEVO
+            'lote': lote_asociado
+        }
 
     except Exception as e:
         st.error(f"Error procesando {uploaded_file.name}: {e}")
@@ -290,6 +298,7 @@ def generar_tabla_estadisticas(lotes_data, es_temperatura=True):
 st.subheader("📈 Gráficos de Fermentación")
 fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
+fig_temp_camisa = go.Figure() if mostrar_temp_camisa else None  # NUEVO
 fig_rate_temp = go.Figure() if mostrar_tasa_cambio else None
 fig_rate_pres = go.Figure() if (mostrar_tasa_cambio and mostrar_presion) else None
 colores = px.colors.qualitative.Plotly
@@ -297,12 +306,14 @@ colores = px.colors.qualitative.Plotly
 # Almacenar datos para estadísticas
 datos_estadisticos_temp = {}
 datos_estadisticos_pres = {}
+datos_estadisticos_temp_camisa = {}  # NUEVO
 
 for idx, nombre in enumerate(lotes_seleccionados):
     color = colores[idx % len(colores)]
     data = lotes[nombre]
     df_temp = data['temp'].sort_values('Tiempo').reset_index(drop=True)
     df_pres = data['pres'].sort_values('Tiempo').reset_index(drop=True) if len(data['pres']) else pd.DataFrame()
+    df_temp_camisa = data['temp_camisa'].sort_values('Tiempo').reset_index(drop=True) if len(data['temp_camisa']) else pd.DataFrame()  # NUEVO
 
     if tiempo_relativo:
         inicio = None
@@ -316,16 +327,20 @@ for idx, nombre in enumerate(lotes_seleccionados):
 
         x_temp = (df_temp['Tiempo'] - inicio).dt.total_seconds() / 3600
         x_pres = (df_pres['Tiempo'] - inicio).dt.total_seconds() / 3600 if len(df_pres) else []
+        x_temp_camisa = (df_temp_camisa['Tiempo'] - inicio).dt.total_seconds() / 3600 if len(df_temp_camisa) else []  # NUEVO
         xlabel = "Horas"
     else:
         x_temp = df_temp['Tiempo']
         x_pres = df_pres['Tiempo']
+        x_temp_camisa = df_temp_camisa['Tiempo']  # NUEVO
         xlabel = "Fecha/Hora"
 
     # Guardar datos para estadísticas
     datos_estadisticos_temp[nombre] = df_temp['Valor']
     if len(df_pres):
         datos_estadisticos_pres[nombre] = df_pres['Valor']
+    if len(df_temp_camisa):  # NUEVO
+        datos_estadisticos_temp_camisa[nombre] = df_temp_camisa['Valor']
 
     fig_temp.add_trace(go.Scatter(
         x=x_temp, y=df_temp['Valor'],
@@ -338,6 +353,14 @@ for idx, nombre in enumerate(lotes_seleccionados):
             x=x_pres, y=df_pres['Valor'],
             mode='lines', name=f"{nombre} - Pres",
             line=dict(color=color, width=3),
+        ))
+
+    # --- GRAFICAR TEMPERATURA DE CAMISA (T2) ---  # NUEVO
+    if mostrar_temp_camisa and len(df_temp_camisa):
+        fig_temp_camisa.add_trace(go.Scatter(
+            x=x_temp_camisa, y=df_temp_camisa['Valor'],
+            mode='lines', name=f"{nombre} - Camisa",
+            line=dict(color=color, width=3, dash='dash'),
         ))
 
     # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE TEMPERATURA ---
@@ -367,7 +390,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
         ))
 
 fig_temp.update_layout(
-    title="Temperatura",
+    title="Temperatura (T1)",
     xaxis_title=xlabel,
     yaxis_title="°C",
     hovermode="x unified",
@@ -378,10 +401,28 @@ st.plotly_chart(fig_temp, use_container_width=True)
 
 # Mostrar estadísticas de temperatura
 if mostrar_analisis:
-    st.markdown("**📊 Estadísticas de Temperatura**")
+    st.markdown("**📊 Estadísticas de Temperatura (T1)**")
     df_stats_temp = generar_tabla_estadisticas(datos_estadisticos_temp)
     if df_stats_temp is not None:
         st.dataframe(df_stats_temp, use_container_width=True, hide_index=True)
+
+# --- GRÁFICO DE TEMPERATURA DE CAMISA ---  # NUEVO
+if mostrar_temp_camisa and fig_temp_camisa:
+    fig_temp_camisa.update_layout(
+        title="Temperatura de Camisa (T2)",
+        xaxis_title=xlabel,
+        yaxis_title="°C",
+        hovermode="x unified",
+        height=600
+    )
+    st.plotly_chart(fig_temp_camisa, use_container_width=True)
+    
+    # Mostrar estadísticas de temperatura de camisa
+    if mostrar_analisis:
+        st.markdown("**📊 Estadísticas de Temperatura de Camisa (T2)**")
+        df_stats_temp_camisa = generar_tabla_estadisticas(datos_estadisticos_temp_camisa)
+        if df_stats_temp_camisa is not None:
+            st.dataframe(df_stats_temp_camisa, use_container_width=True, hide_index=True)
 
 if mostrar_presion:
     fig_pres.update_layout(
