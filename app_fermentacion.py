@@ -300,7 +300,10 @@ fig_temp = go.Figure()
 fig_pres = go.Figure() if mostrar_presion else None
 fig_rate_temp = go.Figure() if mostrar_tasa_cambio else None
 fig_rate_pres = go.Figure() if (mostrar_tasa_cambio and mostrar_presion) else None
-colores = px.colors.qualitative.Plotly
+
+# Paletas de colores complementarias para T1 y T2
+colores_t1 = px.colors.qualitative.Plotly
+colores_t2 = px.colors.qualitative.Set2  # Paleta diferente para T2
 
 # Almacenar datos para estadísticas
 datos_estadisticos_temp = {}
@@ -308,7 +311,9 @@ datos_estadisticos_pres = {}
 datos_estadisticos_temp_camisa = {}
 
 for idx, nombre in enumerate(lotes_seleccionados):
-    color = colores[idx % len(colores)]
+    color_t1 = colores_t1[idx % len(colores_t1)]
+    color_t2 = colores_t2[idx % len(colores_t2)]  # Usar índice para evitar repetición
+    
     data = lotes[nombre]
     df_temp = data['temp'].sort_values('Tiempo').reset_index(drop=True)
     df_pres = data['pres'].sort_values('Tiempo').reset_index(drop=True) if len(data['pres']) else pd.DataFrame()
@@ -345,7 +350,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
     fig_temp.add_trace(go.Scatter(
         x=x_temp, y=df_temp['Valor'],
         mode='lines', name=f"{nombre} - T1",
-        line=dict(color=color, width=3),
+        line=dict(color=color_t1, width=3),
     ))
 
     # --- GRAFICAR T2 (TEMPERATURA DE CAMISA) EN EL MISMO GRÁFICO ---
@@ -353,7 +358,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
         fig_temp.add_trace(go.Scatter(
             x=x_temp_camisa, y=df_temp_camisa['Valor'],
             mode='lines', name=f"{nombre} - T2 (Camisa)",
-            line=dict(color='cyan', width=3, dash='dash'),
+            line=dict(color=color_t2, width=3, dash='dash'),
         ))
 
     # --- GRAFICAR PRESIÓN ---
@@ -361,7 +366,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
         fig_pres.add_trace(go.Scatter(
             x=x_pres, y=df_pres['Valor'],
             mode='lines', name=f"{nombre} - Pres",
-            line=dict(color=color, width=3),
+            line=dict(color=color_t1, width=3),
         ))
 
     # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE TEMPERATURA ---
@@ -374,7 +379,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
         fig_rate_temp.add_trace(go.Scatter(
             x=x_temp[1:], y=tasa_temp[1:],
             mode='lines', name=f"{nombre} - Tasa Temp",
-            line=dict(color=color, width=3),
+            line=dict(color=color_t1, width=3),
         ))
 
     # --- CALCULAR Y GRAFICAR TASA DE CAMBIO DE PRESIÓN ---
@@ -387,7 +392,7 @@ for idx, nombre in enumerate(lotes_seleccionados):
         fig_rate_pres.add_trace(go.Scatter(
             x=x_pres[1:], y=tasa_pres[1:],
             mode='lines', name=f"{nombre} - Tasa Pres",
-            line=dict(color=color, width=3),
+            line=dict(color=color_t1, width=3),
         ))
 
 fig_temp.update_layout(
